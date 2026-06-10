@@ -1000,7 +1000,6 @@ async function updateBoardVisualStatus(boardId, passed, comment) {
             })
         });
         
-        // Исправлено: разные сообщения для разных результатов
         if (passed) {
             toast('Визуальный осмотр пройден ✓', 'success');
             showStandResult('Визуальный осмотр успешно пройден!', 'success');
@@ -1070,7 +1069,6 @@ async function updateBoardDiagnosticsStatus(boardId, passed, comment, details = 
             })
         });
         
-        // Разные сообщения для разных результатов
         if (passed) {
             toast('Диагностика пройдена ✓', 'success');
             showStandResult('Диагностика успешно пройдена!', 'success');
@@ -1468,8 +1466,11 @@ async function submitDiag(result) {
     }
 }
 
+// 3. Сборка - с проверкой корпуса
 let scannedBoardsForAssembly = [];
 let scannedCaseForAssembly = null;
+let isValidCase = false;
+let currentCaseData = null;
 
 function renderStandAssembly() {
     const contentArea = document.getElementById('contentArea');
@@ -1497,9 +1498,11 @@ function renderStandAssembly() {
                 </div>
                 
                 <div class="stand-input-group">
-                    <label>Серийный номер КОРПУСА</label>
+                    <label>Серийный номер КОРПУСА <span id="caseStatus" style="color: var(--text-muted); font-size: 12px;"></span></label>
                     <input type="text" id="asmCase" class="stand-qr-input" 
-                           placeholder="Сканируйте корпус..." autocomplete="off">
+                           placeholder="Сканируйте корпус..." autocomplete="off"
+                           style="transition: all 0.2s;">
+                    <div id="caseValidationMsg" style="font-size: 12px; margin-top: 5px; display: none;"></div>
                 </div>
                 
                 <div class="stand-input-group">
@@ -1526,25 +1529,164 @@ function renderStandAssembly() {
     
     scannedBoardsForAssembly = [];
     scannedCaseForAssembly = null;
+    isValidCase = false;
+    currentCaseData = null;
     
-    const input = document.getElementById('asmBoard');
-    if (input) {
-        input.addEventListener('keypress', function(e) {
+    const boardInput = document.getElementById('asmBoard');
+    if (boardInput) {
+        boardInput.addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 e.preventDefault();
                 addBoardToAssembly(this.value.trim());
                 this.value = '';
             }
         });
-        input.focus();
+        boardInput.focus();
     }
     
     const caseInput = document.getElementById('asmCase');
     if (caseInput) {
+        let debounceTimer;
         caseInput.addEventListener('input', function() {
-            scannedCaseForAssembly = this.value.trim();
-            updateAssemblyUI();
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                validateAndSetCase(this.value.trim());
+            }, 300);
         });
+        
+        caseInput.addEventListener('blur', function() {
+            validateAndSetCase(this.value.trim());
+        });
+        
+        caseInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                validateAndSetCase(this.value.trim());
+            }
+        });
+    }
+}
+
+async function validateAndSetCase(caseSerialNumber) {
+    const caseInput = document.getElementById('asmCase');
+    const validationMsg = document.getElementById('caseValidationMsg');
+    const caseStatus = document.getElementById('caseStatus');
+    
+    if (!caseSerialNumber) {
+        scannedCaseForAssembly = null;
+        isValidCase = false;
+        currentCaseData = null;
+        if (caseInput) {
+            caseInput.style.borderColor = 'var(--border)';
+            caseInput.style.backgroundColor = 'var(--bg-input)';
+        }
+        if (validationMsg) {
+            validationMsg.style.display = 'none';
+        }
+        if (caseStatus) {
+            caseStatus.textContent = '';
+            caseStatus.style.color = 'var(--text-muted)';
+        }
+        updateAssemblyUI();
+        return;
+    }
+    
+    if (caseStatus) {
+        caseStatus.textContent = ' ⏳ проверка...';
+        caseStatus.style.color = 'var(--warning)';
+    }
+    
+    try {
+        const cases = await api('/api/cases');
+        const foundCase = cases.find(c => c.serial_number === caseSerialNumber);
+        
+        if (!foundCase) {
+            isValidCase = false;
+            scannedCaseForAssembly = null;
+            currentCaseData = null;
+            
+            if (caseInput) {
+                caseInput.style.borderColor = 'var(--error)';
+                caseInput.style.backgroundColor = 'rgba(224, 49, 49, 0.05)';
+            }
+            if (validationMsg) {
+                validationMsg.style.display = 'block';
+                validationMsg.style.color = 'var(--error)';
+                validationMsg.innerHTML = '❌ Корпус с таким серийным номером не найден в системе';
+            }
+            if (caseStatus) {
+                caseStatus.textContent = ' ❌ не найден';
+                caseStatus.style.color = 'var(--error)';
+            }
+            showStandResult('Корпус не найден в системе', 'error');
+            updateAssemblyUI();
+            return;
+        }
+        
+        if (foundCase.current_stage === 'used') {
+            isValidCase = false;
+            scannedCaseForAssembly = null;
+            currentCaseData = null;
+            
+            if (caseInput) {
+                caseInput.style.borderColor = 'var(--error)';
+                caseInput.style.backgroundColor = 'rgba(224, 49, 49, 0.05)';
+            }
+            if (validationMsg) {
+                validationMsg.style.display = 'block';
+                validationMsg.style.color = 'var(--error)';
+                validationMsg.innerHTML = '❌ Этот корпус уже использован в другом устройстве';
+            }
+            if (caseStatus) {
+                caseStatus.textContent = ' ❌ уже использован';
+                caseStatus.style.color = 'var(--error)';
+            }
+            showStandResult('Корпус уже использован', 'error');
+            updateAssemblyUI();
+            return;
+        }
+        
+        // Корпус валиден
+        isValidCase = true;
+        scannedCaseForAssembly = caseSerialNumber;
+        currentCaseData = foundCase;
+        
+        if (caseInput) {
+            caseInput.style.borderColor = 'var(--success)';
+            caseInput.style.backgroundColor = 'rgba(46, 125, 50, 0.05)';
+        }
+        if (validationMsg) {
+            validationMsg.style.display = 'block';
+            validationMsg.style.color = 'var(--success)';
+            validationMsg.innerHTML = 'Корпус действителен и готов к использованию';
+        }
+        if (caseStatus) {
+            const caseTypeText = foundCase.case_type ? ` (${foundCase.case_type})` : '';
+            caseStatus.textContent = `найден${caseTypeText}`;
+            caseStatus.style.color = 'var(--success)';
+        }
+        
+        updateAssemblyUI();
+        
+    } catch (e) {
+        console.error('Ошибка проверки корпуса:', e);
+        isValidCase = false;
+        scannedCaseForAssembly = null;
+        currentCaseData = null;
+        
+        if (caseInput) {
+            caseInput.style.borderColor = 'var(--error)';
+        }
+        if (validationMsg) {
+            validationMsg.style.display = 'block';
+            validationMsg.style.color = 'var(--error)';
+            validationMsg.innerHTML = '❌ Ошибка проверки корпуса: ' + e.message;
+        }
+        if (caseStatus) {
+            caseStatus.textContent = ' ❌ ошибка проверки';
+            caseStatus.style.color = 'var(--error)';
+        }
+        updateAssemblyUI();
     }
 }
 
@@ -1657,31 +1799,60 @@ function updateAssemblyUI() {
     const productInput = document.getElementById('asmProduct');
     
     const hasBoard = scannedBoardsForAssembly.length > 0;
-    const hasCase = caseInput && caseInput.value.trim();
+    const hasValidCase = isValidCase && scannedCaseForAssembly !== null;
     const hasSerial = productInput && productInput.value;
     
-    if (hasBoard && hasCase && hasSerial) {
+    if (hasBoard && hasValidCase && hasSerial) {
         assembleBtn.disabled = false;
         assembleBtn.textContent = 'Собрать устройство';
     } else {
         assembleBtn.disabled = true;
-        let reason = [];
-        if (!hasBoard) reason.push('плата');
-        if (!hasCase) reason.push('корпус');
-        if (!hasSerial) reason.push('серийный номер');
-        assembleBtn.textContent = 'Собрать устройство (' + reason.join(', ') + ')';
+        let reasons = [];
+        if (!hasBoard) reasons.push('плата');
+        if (!hasValidCase) {
+            if (caseInput && caseInput.value.trim() && !isValidCase) {
+                reasons.push('корпус (невалидный)');
+            } else if (!caseInput || !caseInput.value.trim()) {
+                reasons.push('корпус');
+            } else {
+                reasons.push('корпус');
+            }
+        }
+        if (!hasSerial) reasons.push('серийный номер');
+        assembleBtn.textContent = 'Собрать устройство (' + reasons.join(', ') + ')';
     }
 }
 
 function clearAssembly() {
     scannedBoardsForAssembly = [];
     scannedCaseForAssembly = null;
-    document.getElementById('asmBoard').value = '';
-    document.getElementById('asmCase').value = '';
-    document.getElementById('asmProduct').value = '';
-    document.getElementById('scannedBoardsList').innerHTML = '';
+    isValidCase = false;
+    currentCaseData = null;
+    
+    const boardInput = document.getElementById('asmBoard');
+    const caseInput = document.getElementById('asmCase');
+    const productInput = document.getElementById('asmProduct');
     const typeInfo = document.getElementById('deviceTypeInfo');
+    const validationMsg = document.getElementById('caseValidationMsg');
+    const caseStatus = document.getElementById('caseStatus');
+    
+    if (boardInput) boardInput.value = '';
+    if (caseInput) {
+        caseInput.value = '';
+        caseInput.style.borderColor = 'var(--border)';
+        caseInput.style.backgroundColor = 'var(--bg-input)';
+    }
+    if (productInput) productInput.value = '';
     if (typeInfo) typeInfo.style.display = 'none';
+    if (validationMsg) validationMsg.style.display = 'none';
+    if (caseStatus) {
+        caseStatus.textContent = '';
+        caseStatus.style.color = 'var(--text-muted)';
+    }
+    
+    const listDiv = document.getElementById('scannedBoardsList');
+    if (listDiv) listDiv.innerHTML = '';
+    
     updateAssemblyUI();
     showStandResult('', 'success');
 }
@@ -1697,6 +1868,11 @@ async function submitAssembly() {
     
     if (!caseSn) {
         showStandResult('Отсканируйте корпус', 'error');
+        return;
+    }
+    
+    if (!isValidCase || scannedCaseForAssembly !== caseSn) {
+        showStandResult('Корпус не прошел проверку. Пожалуйста, отсканируйте валидный корпус.', 'error');
         return;
     }
     
@@ -1723,6 +1899,14 @@ async function submitAssembly() {
         
         showStandResult('Устройство ' + productSn + ' успешно собрано!', 'success');
         toast('Устройство собрано', 'success');
+        
+        try {
+            const updatedCases = await api('/api/cases');
+            S.cases = updatedCases || [];
+            S.filteredCases = S.cases.slice();
+        } catch (e) {
+            console.warn('Не удалось обновить список корпусов:', e);
+        }
         
         setTimeout(() => {
             clearAssembly();
